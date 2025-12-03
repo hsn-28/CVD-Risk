@@ -108,15 +108,13 @@ export const api = {
   // CIMT prediction from bilateral images
   async predictCIMT(
     leftImage: File,
-    rightImage: File | null,
+    rightImage: File,
     age: number,
     gender: number
   ): Promise<APIResponse<CIMTResult>> {
     const formData = new FormData();
     formData.append('left_image', leftImage);
-    if (rightImage) {
-      formData.append('right_image', rightImage);
-    }
+    formData.append('right_image', rightImage);
     formData.append('age', age.toString());
     formData.append('gender', gender.toString());
 
@@ -154,15 +152,13 @@ export const api = {
   // Fusion prediction - MAIN ENDPOINT
   async predictFusion(
     leftImage: File,
-    rightImage: File | null,
+    rightImage: File,
     age: number,
     gender: number
   ): Promise<APIResponse<FusionPrediction>> {
     const formData = new FormData();
     formData.append('left_image', leftImage);
-    if (rightImage) {
-      formData.append('right_image', rightImage);
-    }
+    formData.append('right_image', rightImage);
     formData.append('age', age.toString());
     formData.append('gender', gender.toString());
 

@@ -18,10 +18,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY backend/app ./app
-COPY backend/scripts ./scripts
 
 # Note: normalization_stats.pkl will be mounted as a volume at runtime
-# If it doesn't exist yet, run: python backend/scripts/compute_normalization_stats.py
 
 # Copy model directories as read-only volumes reference
 # These will be mounted at runtime

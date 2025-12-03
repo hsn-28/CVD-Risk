@@ -12,7 +12,8 @@ from torchvision.transforms import InterpolationMode
 # ============================================================================
 
 transform_htn = transforms.Compose([
-    transforms.Resize((224, 224), interpolation=InterpolationMode.BICUBIC),
+    transforms.Resize(256, interpolation=InterpolationMode.BICUBIC),
+    transforms.CenterCrop(224),  # CRITICAL: Must include CenterCrop
     transforms.ToTensor(),
     transforms.Normalize(
         mean=[0.485, 0.456, 0.406],
@@ -23,10 +24,11 @@ transform_htn = transforms.Compose([
 """
 HTN Transform Summary:
 - Input: PIL Image or numpy array
-- Resize to 224x224 (BICUBIC interpolation - matches notebook)
+- Resize to 256 (BICUBIC interpolation - matches notebook)
+- CenterCrop to 224x224 (CRITICAL: Must match ViT training)
 - Convert to tensor [3, 224, 224]
 - Normalize with ImageNet stats
-- Output: [3, 224, 224] tensor
+- Output: [3, 224, 224] tensor with ImageNet normalization
 """
 
 

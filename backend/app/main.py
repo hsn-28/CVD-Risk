@@ -198,9 +198,8 @@ async def predict_htn(file: UploadFile = File(...)):
     - file: Fundus image (PNG or JPG)
 
     Returns:
-    - prediction: 0=Normal, 1=Hypertensive
-    - probability: Probability of hypertension [0, 1]
-    - confidence: Confidence level (Low/Medium/High)
+    - 0: Normal (no hypertension)
+    - 1: Hypertensive (hypertension detected)
     """
 
     start_time = time.time()
@@ -214,20 +213,27 @@ async def predict_htn(file: UploadFile = File(...)):
         htn_extractor = app.state.fusion_extractor.htn_extractor
         prob, embedding, _ = htn_extractor.extract(image)
 
-        # Prepare response
-        prediction = 1 if prob >= 0.5 else 0
-        if prob >= 0.7:
+        # Get optimal threshold from model config
+        htn_config = model_loader.get_config('htn')
+        optimal_threshold = htn_config.get('optimal_threshold', 0.5)
+
+        # Use optimal threshold for prediction (CRITICAL!)
+        prediction = 1 if prob >= optimal_threshold else 0
+
+        # Determine confidence level
+        if prob >= 0.7 or prob <= 0.3:
             confidence = "High"
-        elif prob >= 0.4:
-            confidence = "Medium"
         else:
-            confidence = "Low"
+            confidence = "Medium"
+
+        # Determine label
+        label = "Hypertensive" if prediction == 1 else "Normal"
 
         result = HTNPredictionResponse(
             prediction=prediction,
             probability=float(prob),
             confidence=confidence,
-            label="Hypertensive Retinopathy Detected" if prediction == 1 else "Normal"
+            label=label
         )
 
         return APIResponse(
@@ -248,7 +254,7 @@ async def predict_htn(file: UploadFile = File(...)):
 @app.post("/api/predict/cimt", response_model=APIResponse)
 async def predict_cimt(
     left_image: UploadFile = File(...),
-    right_image: UploadFile = File(None),
+    right_image: UploadFile = File(...),
     age: int = Form(...),
     gender: int = Form(...)
 ):
@@ -257,7 +263,7 @@ async def predict_cimt(
 
     Inputs:
     - left_image: Left eye fundus image
-    - right_image: Right eye fundus image (optional)
+    - right_image: Right eye fundus image
     - age: Age in years
     - gender: 0=Female, 1=Male
 
@@ -280,10 +286,8 @@ async def predict_cimt(
         left_bytes = await left_image.read()
         left_img = validate_image(left_bytes)
 
-        right_img = None
-        if right_image.filename:
-            right_bytes = await right_image.read()
-            right_img = validate_image(right_bytes)
+        right_bytes = await right_image.read()
+        right_img = validate_image(right_bytes)
 
         # Extract features
         cimt_extractor = app.state.fusion_extractor.cimt_extractor
@@ -382,7 +386,7 @@ async def predict_vessel(file: UploadFile = File(...)):
 @app.post("/api/predict/fusion", response_model=APIResponse)
 async def predict_fusion(
     left_image: UploadFile = File(...),
-    right_image: UploadFile = File(None),
+    right_image: UploadFile = File(...),
     age: int = Form(...),
     gender: int = Form(...)
 ):
@@ -393,7 +397,7 @@ async def predict_fusion(
 
     Inputs:
     - left_image: Left eye fundus image
-    - right_image: Right eye fundus image (optional)
+    - right_image: Right eye fundus image
     - age: Age in years
     - gender: 0=Female, 1=Male
 
@@ -417,27 +421,40 @@ async def predict_fusion(
         if gender not in [0, 1]:
             raise ValueError("Gender must be 0 (Female) or 1 (Male)")
 
+        # Get model configs early (needed for thresholds and standardization)
+        htn_config = model_loader.get_config('htn')
+
         # Load images
         left_bytes = await left_image.read()
         left_img = validate_image(left_bytes)
 
-        right_img = None
-        if right_image.filename:
-            right_bytes = await right_image.read()
-            right_img = validate_image(right_bytes)
+        right_bytes = await right_image.read()
+        right_img = validate_image(right_bytes)
 
         # Extract 1425 features
         features_1425, metadata = app.state.fusion_extractor.extract_all_features(
             left_img, right_img, age, gender
         )
 
-        # Normalize features
-        normalizer = app.state.normalizer
-        if normalizer.is_ready():
-            features_normalized = normalizer.normalize(features_1425)
+        # Get standardization parameters from fusion model config (CRITICAL!)
+        fusion_config = model_loader.get_config('fusion')
+        if 'fusion_mean' in fusion_config and 'fusion_std' in fusion_config:
+            fusion_mean = fusion_config['fusion_mean']
+            fusion_std = fusion_config['fusion_std']
+
+            # Verify dimension match
+            if features_1425.shape[0] != fusion_mean.shape[0]:
+                raise ValueError(
+                    f"Feature dimension mismatch! Expected {fusion_mean.shape[0]}, "
+                    f"got {features_1425.shape[0]}"
+                )
+
+            # Standardize using saved parameters
+            features_normalized = (features_1425 - fusion_mean) / (fusion_std + 1e-8)
+            logger.debug(f"Features standardized using checkpoint parameters")
         else:
-            logger.warning("Using unnormalized features - accuracy may be poor!")
-            features_normalized = features_1425
+            logger.error("Fusion model missing standardization parameters!")
+            raise ValueError("Invalid fusion model checkpoint - missing standardization parameters")
 
         # Predict CVD risk
         import torch
@@ -475,11 +492,13 @@ async def predict_fusion(
             )
 
         # Prepare individual results
+        # Use optimal threshold for HTN (from model config)
+        htn_optimal_threshold = htn_config.get('optimal_threshold', 0.5)
         htn_result = HTNPredictionResponse(
-            prediction=1 if metadata['htn_probability'] >= 0.5 else 0,
+            prediction=1 if metadata['htn_probability'] >= htn_optimal_threshold else 0,
             probability=float(metadata['htn_probability']),
             confidence="High" if metadata['htn_probability'] >= 0.7 else "Medium",
-            label="Hypertensive" if metadata['htn_probability'] >= 0.5 else "Normal"
+            label="Hypertensive" if metadata['htn_probability'] >= htn_optimal_threshold else "Normal"
         )
 
         cimt_threshold = 0.9
@@ -540,6 +559,70 @@ async def predict_fusion(
 
 
 # ============================================================================
+# TEST ENDPOINTS
+# ============================================================================
+
+@app.get("/api/test/transforms")
+async def test_transforms():
+    """Test that transforms produce correct outputs"""
+    import torch
+    from PIL import Image
+    from .preprocessing.transforms import transform_htn, transform_cimt, transform_vessel
+
+    # Create test image
+    test_img = Image.new('RGB', (1024, 1024), color=(128, 128, 128))
+
+    # Test transforms
+    htn_out = transform_htn(test_img)
+    cimt_out = transform_cimt(test_img)
+    vessel_out = transform_vessel(test_img)
+
+    return {
+        'htn': {
+            'shape': list(htn_out.shape),
+            'range': [float(htn_out.min()), float(htn_out.max())],
+            'expected': 'Shape [3, 224, 224], Range ~ [-2, 2]',
+            'correct': htn_out.shape == torch.Size([3, 224, 224])
+        },
+        'cimt': {
+            'shape': list(cimt_out.shape),
+            'range': [float(cimt_out.min()), float(cimt_out.max())],
+            'expected': 'Shape [3, 512, 512], Range ~ [-2, 2]',
+            'correct': cimt_out.shape == torch.Size([3, 512, 512])
+        },
+        'vessel': {
+            'shape': list(vessel_out.shape),
+            'range': [float(vessel_out.min()), float(vessel_out.max())],
+            'expected': 'Shape [3, 512, 512], Range [0, 1]',
+            'correct': vessel_out.shape == torch.Size([3, 512, 512]) and
+                      vessel_out.min() >= 0 and vessel_out.max() <= 1
+        }
+    }
+
+
+@app.get("/api/test/model_configs")
+async def test_model_configs():
+    """Test that model configs are loaded correctly"""
+
+    htn_config = model_loader.get_config('htn')
+    fusion_config = model_loader.get_config('fusion')
+
+    return {
+        'htn': {
+            'has_optimal_threshold': 'optimal_threshold' in htn_config,
+            'optimal_threshold': htn_config.get('optimal_threshold', 'NOT FOUND'),
+            'threshold_info': htn_config.get('threshold_info', {})
+        },
+        'fusion': {
+            'has_standardization': all(k in fusion_config for k in ['fusion_mean', 'fusion_std']),
+            'mean_shape': str(fusion_config.get('fusion_mean', np.array([])).shape) if 'fusion_mean' in fusion_config else 'NOT FOUND',
+            'std_shape': str(fusion_config.get('fusion_std', np.array([])).shape) if 'fusion_std' in fusion_config else 'NOT FOUND',
+            'expected_dim': 1425
+        }
+    }
+
+
+# ============================================================================
 # ROOT ENDPOINT
 # ============================================================================
 
@@ -558,6 +641,10 @@ async def root():
             "cimt": "POST /api/predict/cimt",
             "vessel": "POST /api/predict/vessel",
             "fusion": "POST /api/predict/fusion"
+        },
+        "test_endpoints": {
+            "transforms": "GET /api/test/transforms",
+            "model_configs": "GET /api/test/model_configs"
         }
     }
 

@@ -33,6 +33,7 @@ class ModelLoader:
 
     _instance = None
     _models: Dict[str, torch.nn.Module] = {}
+    _model_configs: Dict[str, Dict] = {}
     _loaded = False
 
     def __new__(cls):
@@ -108,13 +109,25 @@ class ModelLoader:
             state_dict = ckpt.get('model', ckpt.get('model_state_dict', ckpt))
             model.load_state_dict(state_dict, strict=False)
 
+            # Extract optimal threshold from checkpoint (CRITICAL!)
+            optimal_threshold = ckpt.get('optimal_threshold', 0.4)
+            threshold_info = ckpt.get('threshold_info', {})
+
             # Disable gradients
             model.eval()
             for param in model.parameters():
                 param.requires_grad = False
 
             self._models['htn'] = model
+
+            # Store model configuration
+            self._model_configs['htn'] = {
+                'optimal_threshold': optimal_threshold,
+                'threshold_info': threshold_info
+            }
+
             logger.info(f"✓ HTN model loaded successfully ({self.get_model_size('htn')} MB)")
+            logger.info(f"  Optimal threshold: {optimal_threshold:.4f}")
             return model
 
         except Exception as e:
@@ -230,6 +243,32 @@ class ModelLoader:
             ).to(self.device)
 
             ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+
+            # CRITICAL: Verify standardization parameters exist
+            if 'standardization' not in ckpt:
+                raise ValueError(
+                    "Checkpoint missing 'standardization' parameters! "
+                    "This model was trained with an old notebook. "
+                    "Please retrain fusion model with updated notebook."
+                )
+
+            # Extract standardization parameters
+            import numpy as np
+            fusion_mean = ckpt['standardization']['fusion_mean']
+            fusion_std = ckpt['standardization']['fusion_std']
+
+            # Convert to numpy if needed
+            if torch.is_tensor(fusion_mean):
+                fusion_mean = fusion_mean.cpu().numpy()
+            if torch.is_tensor(fusion_std):
+                fusion_std = fusion_std.cpu().numpy()
+
+            # Flatten if 2D
+            if fusion_mean.ndim > 1:
+                fusion_mean = fusion_mean.flatten()
+            if fusion_std.ndim > 1:
+                fusion_std = fusion_std.flatten()
+
             state_dict = ckpt.get('model_state_dict', ckpt.get('state_dict', ckpt))
             model.load_state_dict(state_dict, strict=False)
 
@@ -238,7 +277,18 @@ class ModelLoader:
                 param.requires_grad = False
 
             self._models['fusion'] = model
+
+            # Store standardization parameters in config
+            self._model_configs['fusion'] = {
+                'fusion_mean': fusion_mean,
+                'fusion_std': fusion_std,
+                'best_val_auc': ckpt.get('best_val_auc', None),
+                'model_config': ckpt.get('model_config', {})
+            }
+
             logger.info(f"✓ Fusion model loaded successfully ({self.get_model_size('fusion')} MB)")
+            logger.info(f"  Standardization parameters loaded:")
+            logger.info(f"    Mean shape: {fusion_mean.shape}, Std shape: {fusion_std.shape}")
             return model
 
         except Exception as e:
@@ -282,6 +332,10 @@ class ModelLoader:
             raise ValueError(f"Model '{model_name}' not loaded. Available: {list(self._models.keys())}")
 
         return self._models[model_name]
+
+    def get_config(self, model_name: str) -> Dict:
+        """Get model configuration (thresholds, standardization params, etc.)"""
+        return self._model_configs.get(model_name, {})
 
     def get_model_size(self, model_name: str) -> float:
         """Get model size in MB"""
