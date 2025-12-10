@@ -8,7 +8,6 @@ fusion/
 *.joblib
 
 # Notebooks
-*.ipynb
 segmentation.ipynb
 deep_fusion.ipynb
 deep_fusion_chinese_cimt.ipynb
