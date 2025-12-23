@@ -11,13 +11,10 @@ import io
 import time
 import base64
 import logging
-from datetime import datetime
-from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from PIL import Image
 import numpy as np
 
@@ -48,6 +45,38 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================================
+# METRICS (OPTIONAL, PRIVACY-SAFE)
+# ============================================================================
+
+class MetricsStore:
+    """In-memory, privacy-safe metrics store."""
+
+    def __init__(self, model_version: str):
+        self.model_version = model_version
+        self.request_count = 0
+        self.error_count = 0
+        self.total_latency_ms = 0.0
+
+    def record(self, latency_ms: float, is_error: bool) -> None:
+        self.request_count += 1
+        if is_error:
+            self.error_count += 1
+        self.total_latency_ms += latency_ms
+
+    def snapshot(self) -> dict:
+        avg_latency = (
+            self.total_latency_ms / self.request_count
+            if self.request_count > 0
+            else 0.0
+        )
+        return {
+            "request_count": self.request_count,
+            "error_count": self.error_count,
+            "latency_ms": round(avg_latency, 2),
+            "model_version": self.model_version,
+        }
+
+# ============================================================================
 # STARTUP/SHUTDOWN EVENTS
 # ============================================================================
 
@@ -61,16 +90,20 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 80)
 
     try:
-        logger.info("Validating model paths...")
-        settings.validate_model_paths()
-        logger.info("✓ All model paths exist")
+        if settings.USE_DUMMY_MODEL:
+            logger.info("USE_DUMMY_MODEL=1 set; skipping weight validation")
+        else:
+            logger.info("Validating model paths...")
+            settings.validate_model_paths()
+            logger.info("✓ All model paths exist")
 
+        resolved_paths = settings.resolve_model_paths()
         logger.info("\nLoading models...")
         model_loader.load_all_models(
-            str(settings.HTN_CHECKPOINT),
-            str(settings.CIMT_CHECKPOINT),
-            str(settings.VESSEL_CHECKPOINT),
-            str(settings.FUSION_CHECKPOINT)
+            str(resolved_paths["HTN"]),
+            str(resolved_paths["CIMT"]),
+            str(resolved_paths["Vessel"]),
+            str(resolved_paths["Fusion"])
         )
 
         logger.info("\nLoading normalization statistics...")
@@ -93,6 +126,9 @@ async def lifespan(app: FastAPI):
         logger.info("✓ ALL SYSTEMS READY")
         logger.info("=" * 80)
 
+    except FileNotFoundError as e:
+        logger.error(str(e))
+        raise RuntimeError(str(e))
     except Exception as e:
         logger.error(f"STARTUP FAILED: {e}")
         raise
@@ -124,6 +160,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+if settings.ENABLE_METRICS:
+    app.state.metrics = MetricsStore(model_version=settings.MODEL_VERSION)
+
+    @app.middleware("http")
+    async def metrics_middleware(request, call_next):
+        start_time = time.time()
+        response = await call_next(request)
+        latency_ms = (time.time() - start_time) * 1000
+        is_error = response.status_code >= 400
+        app.state.metrics.record(latency_ms, is_error)
+        return response
 
 # ============================================================================
 # UTILITY FUNCTIONS
@@ -187,6 +235,14 @@ async def health_check():
         models_loaded=model_loader.is_ready(),
         models=list(model_loader._models.keys())
     )
+
+@app.get("/metrics")
+async def metrics():
+    """Privacy-safe metrics endpoint"""
+
+    if not settings.ENABLE_METRICS:
+        return {"enabled": False}
+    return app.state.metrics.snapshot()
 
 
 @app.post("/api/predict/htn", response_model=APIResponse)
@@ -636,6 +692,7 @@ async def root():
         "status": "running",
         "docs": "/docs",
         "health": "/health",
+        "metrics": "/metrics",
         "endpoints": {
             "htn": "POST /api/predict/htn",
             "cimt": "POST /api/predict/cimt",

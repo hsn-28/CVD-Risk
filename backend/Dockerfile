@@ -19,11 +19,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY backend/app ./app
 
-# Note: pth, fusion, and normalization_stats.pkl will be mounted as volumes at runtime
-
-# Copy model directories as read-only volumes reference
-# These will be mounted at runtime
-# VOLUME ["/app/pth", "/app/fusion"]
+# Note: weights and normalization_stats.pkl can be mounted as volumes at runtime
+# VOLUME ["/app/weights"]
 
 EXPOSE 8000
 

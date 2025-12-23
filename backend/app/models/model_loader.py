@@ -5,10 +5,12 @@ Handles efficient loading and caching of all 4 models
 Special attention to memory management for 1.5GB HTN model
 """
 
+import os
 import torch
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Dict
 import logging
+import numpy as np
 
 from .architectures import (
     RETFoundClassifier,
@@ -18,6 +20,39 @@ from .architectures import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _use_dummy_model() -> bool:
+    return os.getenv("USE_DUMMY_MODEL", "0") == "1"
+
+
+class _DummyHTN(torch.nn.Module):
+    def forward(self, x, return_embedding=False):
+        batch = x.shape[0]
+        logits = torch.zeros((batch, 1), device=x.device)
+        embedding = torch.zeros((batch, 1024), device=x.device)
+        return (logits, embedding) if return_embedding else logits
+
+
+class _DummyCIMT(torch.nn.Module):
+    def forward(self, left_img, right_img, clinical, return_embedding=False):
+        batch = left_img.shape[0]
+        pred = torch.zeros((batch, 1), device=left_img.device)
+        embedding = torch.zeros((batch, 128), device=left_img.device)
+        return (pred, embedding) if return_embedding else pred
+
+
+class _DummyUNet(torch.nn.Module):
+    def forward(self, x, return_features=False):
+        batch = x.shape[0]
+        if return_features:
+            return torch.zeros((batch, 256), device=x.device)
+        return torch.zeros((batch, 1, 512, 512), device=x.device)
+
+
+class _DummyFusion(torch.nn.Module):
+    def forward(self, x):
+        return torch.zeros((x.shape[0], 1), device=x.device)
 
 
 class ModelLoader:
@@ -64,6 +99,17 @@ class ModelLoader:
         if 'htn' in self._models:
             logger.info("HTN model already loaded (cached)")
             return self._models['htn']
+
+        if _use_dummy_model():
+            logger.info("USE_DUMMY_MODEL=1 set; loading dummy HTN model")
+            model = _DummyHTN().to(self.device)
+            model.eval()
+            self._models['htn'] = model
+            self._model_configs['htn'] = {
+                'optimal_threshold': 0.5,
+                'threshold_info': {}
+            }
+            return model
 
         logger.info(f"Loading HTN model from {checkpoint_path}...")
         checkpoint_path = Path(checkpoint_path)
@@ -149,6 +195,13 @@ class ModelLoader:
             logger.info("CIMT model already loaded (cached)")
             return self._models['cimt']
 
+        if _use_dummy_model():
+            logger.info("USE_DUMMY_MODEL=1 set; loading dummy CIMT model")
+            model = _DummyCIMT().to(self.device)
+            model.eval()
+            self._models['cimt'] = model
+            return model
+
         logger.info(f"Loading CIMT model from {checkpoint_path}...")
         checkpoint_path = Path(checkpoint_path)
 
@@ -189,6 +242,13 @@ class ModelLoader:
             logger.info("Vessel model already loaded (cached)")
             return self._models['vessel']
 
+        if _use_dummy_model():
+            logger.info("USE_DUMMY_MODEL=1 set; loading dummy vessel model")
+            model = _DummyUNet().to(self.device)
+            model.eval()
+            self._models['vessel'] = model
+            return model
+
         logger.info(f"Loading vessel model from {checkpoint_path}...")
         checkpoint_path = Path(checkpoint_path)
 
@@ -219,7 +279,7 @@ class ModelLoader:
         Load fusion meta-classifier
 
         Args:
-            checkpoint_path: Path to fusion_cvd_noskewed.pth
+            checkpoint_path: Path to fusion_cvd_notskewed.pth
 
         Returns:
             FusionMetaClassifier instance ready for inference
@@ -228,6 +288,19 @@ class ModelLoader:
         if 'fusion' in self._models:
             logger.info("Fusion model already loaded (cached)")
             return self._models['fusion']
+
+        if _use_dummy_model():
+            logger.info("USE_DUMMY_MODEL=1 set; loading dummy fusion model")
+            model = _DummyFusion().to(self.device)
+            model.eval()
+            self._models['fusion'] = model
+            self._model_configs['fusion'] = {
+                'fusion_mean': np.zeros((1425,), dtype=np.float32),
+                'fusion_std': np.ones((1425,), dtype=np.float32),
+                'best_val_auc': None,
+                'model_config': {}
+            }
+            return model
 
         logger.info(f"Loading fusion model from {checkpoint_path}...")
         checkpoint_path = Path(checkpoint_path)
@@ -303,7 +376,7 @@ class ModelLoader:
             htn_path: Path to hypertension.pt
             cimt_path: Path to cimt_reg.pth
             vessel_path: Path to vessel.pth
-            fusion_path: Path to fusion_cvd_noskewed.pth
+            fusion_path: Path to fusion_cvd_notskewed.pth
         """
 
         logger.info("=" * 80)

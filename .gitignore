@@ -1,8 +1,10 @@
 # Model weights and data
+weights/
 pth/
 fusion/
 *.pth
 *.pt
+*.ckpt
 *.h5
 *.pkl
 *.joblib
@@ -57,6 +59,12 @@ Thumbs.db
 .AppleDouble
 .LSOverride
 *.bak
+
+# Env
+.env
+
+# Jupyter
+.ipynb_checkpoints/
 
 # Python
 __pycache__/

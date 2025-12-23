@@ -9,11 +9,10 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # Mount model directories as read-only
-      - ./pth:/app/pth:ro
-      - ./fusion:/app/fusion:ro
-      # Mount normalization statistics
-      - ./backend/normalization_stats.pkl:/app/normalization_stats.pkl:ro
+      # Mount model weights as read-only
+      - ./weights:/app/weights:ro
+      # Mount normalization statistics (optional)
+      - ./backend/normalization_stats.pkl:/app/backend/normalization_stats.pkl:ro
     environment:
       - DEVICE=cpu  # Change to cuda if GPU available
       - LOG_LEVEL=INFO
