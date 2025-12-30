@@ -104,6 +104,14 @@ Sync requirements from repo imports:
 python scripts/extract_requirements.py --dry-run
 ```
 
+## Setup
+
+This project requires a Hugging Face token.
+
+1. Go to https://huggingface.co/settings/tokens
+2. Create a new token
+3. Replace the token in `deep_fusion_notskewed.ipynb` and `deep_fusion_skewed.ipynb` at line 697
+
 ## License
 
 MIT (see LICENSE).
